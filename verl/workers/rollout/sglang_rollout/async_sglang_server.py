@@ -805,6 +805,7 @@ class SGLangReplica(RolloutReplica):
             logger.warning(f"RAY_EXPERIMENTAL_NOSET_{visible_devices_keyword} is set True!")
             base_gpu_id = (0 + self.replica_rank * replica_world_size) % self.gpus_per_node
         # create server actor in each node with node affinity and cuda visible devices
+        server_node_ids = []
         for node_rank in range(self.nnodes):
             workers = self.workers[
                 node_rank * self.gpus_per_replica_node : (node_rank + 1) * self.gpus_per_replica_node
@@ -858,9 +859,10 @@ class SGLangReplica(RolloutReplica):
                 base_gpu_id=base_gpu_id,
             )
             self.servers.append(server)
+            server_node_ids.append(node_id)
 
         # Fail fast if a server actor cannot be placed, instead of blocking on the next .remote().
-        await wait_rollout_servers_scheduled(self.servers)
+        await wait_rollout_servers_scheduled(self.servers, server_node_ids)
 
         # launch http server in each node
         master_address, master_port = None, None

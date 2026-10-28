@@ -656,7 +656,7 @@ class TRTLLMReplica(RolloutReplica):
         self.servers.append(server)
 
         # Fail fast if a server actor cannot be placed, instead of blocking on the next .remote().
-        await wait_rollout_servers_scheduled(self.servers)
+        await wait_rollout_servers_scheduled(self.servers, [node_id])
 
         # launch http server in each node
         await asyncio.gather(*[server.launch_server.remote() for server in self.servers])

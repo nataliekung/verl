@@ -1513,6 +1513,7 @@ class vLLMReplica(RolloutReplica):
 
         # create server actor in each node with node affinity and cuda visible devices
         nnodes, gpus_per_replica_node = self.nnodes, self.gpus_per_replica_node
+        server_node_ids = []
         for node_rank in range(nnodes):
             workers = self.workers[node_rank * gpus_per_replica_node : (node_rank + 1) * gpus_per_replica_node]
             node_cuda_visible_devices = ",".join(
@@ -1551,9 +1552,10 @@ class vLLMReplica(RolloutReplica):
                 cuda_visible_devices=node_cuda_visible_devices,
             )
             self.servers.append(server)
+            server_node_ids.append(node_id)
 
         # Fail fast if a server actor cannot be placed, instead of blocking on the next .remote().
-        await wait_rollout_servers_scheduled(self.servers)
+        await wait_rollout_servers_scheduled(self.servers, server_node_ids)
 
         # launch http server in each node
         master_address, master_port, dp_rpc_port = await self.servers[0].get_master_address.remote()

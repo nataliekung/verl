@@ -48,7 +48,7 @@ def _state_api_must_not_be_called(*_args, **_kwargs):
 async def test_returns_once_every_actor_is_ready(monkeypatch):
     monkeypatch.setattr(replica, "get_actor", _state_api_must_not_be_called)
     servers = [_fake_server("a", 0.0), _fake_server("b", 0.02)]
-    await replica.wait_rollout_servers_scheduled(servers, timeout_s=5.0)
+    await replica.wait_rollout_servers_scheduled(servers, ["n0", "n1"], timeout_s=5.0)
 
 
 @pytest.mark.asyncio
@@ -56,15 +56,15 @@ async def test_raises_with_state_api_diagnostic_when_unschedulable(monkeypatch):
     info = {
         "name": "vllm_server_0_0",
         "state": "PENDING_CREATION",
-        "node_id": "node0",
+        "node_id": "",
         "required_resources": {"GPU": 1.0},
     }
     monkeypatch.setattr(replica, "get_actor", lambda _id, timeout: info)
     servers = [_fake_server("a", 0.0), _fake_server("b", None)]
     with pytest.raises(RuntimeError) as excinfo:
-        await replica.wait_rollout_servers_scheduled(servers, timeout_s=0.05)
+        await replica.wait_rollout_servers_scheduled(servers, ["n0", "n1"], timeout_s=0.05)
     msg = str(excinfo.value)
-    assert "vllm_server_0_0 state=PENDING_CREATION" in msg
+    assert "vllm_server_0_0 target_node=n1 state=PENDING_CREATION" in msg
     assert "required_resources={'GPU': 1.0}" in msg
 
 
@@ -74,18 +74,23 @@ async def test_raises_with_actor_id_when_state_api_is_unavailable(monkeypatch):
         raise ConnectionError("Could not read 'dashboard' from GCS")
 
     monkeypatch.setattr(replica, "get_actor", no_dashboard)
-    with pytest.raises(RuntimeError, match="b state=unknown"):
-        await replica.wait_rollout_servers_scheduled([_fake_server("b", None)], timeout_s=0.05)
+    with pytest.raises(RuntimeError, match="b target_node=n0 state=unknown"):
+        await replica.wait_rollout_servers_scheduled([_fake_server("b", None)], ["n0"], timeout_s=0.05)
 
 
 @pytest.mark.asyncio
-async def test_propagates_actor_init_failure(monkeypatch):
+async def test_raises_init_failure_without_waiting_for_pending_actors(monkeypatch):
+    monkeypatch.setattr(replica, "get_actor", _state_api_must_not_be_called)
+
     async def failing_ready():
         raise ValueError("bad rollout config")
 
-    server = SimpleNamespace(
+    failing = SimpleNamespace(
         _actor_id=SimpleNamespace(hex=lambda: "a"),
         __ray_ready__=SimpleNamespace(remote=failing_ready),
     )
+    loop = asyncio.get_running_loop()
+    start = loop.time()
     with pytest.raises(ValueError, match="bad rollout config"):
-        await replica.wait_rollout_servers_scheduled([server], timeout_s=5.0)
+        await replica.wait_rollout_servers_scheduled([failing, _fake_server("b", None)], ["n0", "n1"], timeout_s=30.0)
+    assert loop.time() - start < 5.0
