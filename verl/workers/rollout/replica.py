@@ -13,7 +13,6 @@
 # limitations under the License.
 import asyncio
 import logging
-import time
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Any, Callable, Optional
@@ -33,52 +32,56 @@ from verl.workers.config import HFModelConfig, RolloutConfig
 logger = logging.getLogger(__file__)
 
 
-# Deadline for a rollout server actor to leave PENDING_CREATION. A colocated server actor
-# is hard-pinned (NodeAffinity, soft=False) to its training worker's node; if that node has
-# no free slot the actor never schedules and the subsequent .remote() call would block
-# forever. Bounding the wait turns a silent hang into an actionable error.
+# Deadline for a rollout server actor to finish creation. A colocated server actor is
+# hard-pinned (NodeAffinity, soft=False) to its training worker's node; if that node has no
+# free slot the actor never schedules and the subsequent .remote() call would block forever.
+# Bounding the wait turns a silent hang into an actionable error.
 ROLLOUT_SERVER_SCHEDULE_TIMEOUT_S = 300.0
-
-_UNSCHEDULED_ACTOR_STATES = ("PENDING_CREATION", "DEPENDENCIES_UNREADY")
 
 
 async def wait_rollout_servers_scheduled(
     servers: list[ActorHandle],
     *,
     timeout_s: float = ROLLOUT_SERVER_SCHEDULE_TIMEOUT_S,
-    poll_interval_s: float = 2.0,
 ) -> None:
-    """Fail fast if any rollout server actor stays unschedulable past ``timeout_s``.
+    """Fail fast if any rollout server actor is not created within ``timeout_s``.
 
-    Returns as soon as every actor has left the PENDING_CREATION / DEPENDENCIES_UNREADY
-    states. Slow engine init is unaffected: an already-scheduled (ALIVE) actor passes
-    immediately, so only a genuine placement failure trips the deadline.
+    Waits on ``__ray_ready__``, which resolves once the actor is placed and its lightweight
+    ``__init__`` has run; engine startup happens later in ``launch_server`` and is unaffected.
+    This needs neither the Ray dashboard nor a polling loop on the event loop.
     """
-    deadline = time.monotonic() + timeout_s
-    while True:
-        pending = []
-        for server in servers:
-            info = get_actor(server._actor_id.hex())
-            state = info.get("state") if info else _UNSCHEDULED_ACTOR_STATES[0]
-            if state in _UNSCHEDULED_ACTOR_STATES:
-                pending.append(info or {"actor_id": server._actor_id.hex(), "state": state})
-        if not pending:
-            return
-        if time.monotonic() >= deadline:
-            detail = "; ".join(
-                f"{p.get('name') or p.get('actor_id')} state={p.get('state')} "
-                f"node={p.get('node_id')} required_resources={p.get('required_resources')}"
-                for p in pending
-            )
-            raise RuntimeError(
-                f"Rollout server actor(s) still unschedulable after {timeout_s:.0f}s: {detail}. "
-                "A colocated rollout server is hard-pinned to its training worker's node "
-                "(NodeAffinity, soft=False); that node has no free slot for it. Check "
-                "`ray list actors` for PENDING_CREATION servers and either reduce per-node "
-                "resource requests or use a layout with >=2 usable GPUs per node for "
-                "cross-node hybrid rollout."
-            )
-        await asyncio.sleep(poll_interval_s)
+    ready = {asyncio.ensure_future(server.__ray_ready__.remote()): server for server in servers}
+    done, pending = await asyncio.wait(ready, timeout=timeout_s)
+    for task in done:
+        task.result()
+    if not pending:
+        return
+    for task in pending:
+        task.cancel()
+    detail = "; ".join(await asyncio.gather(*(_describe_unready_actor(ready[task]) for task in pending)))
+    raise RuntimeError(
+        f"Rollout server actor(s) still not created after {timeout_s:.0f}s: {detail}. "
+        "A colocated rollout server is hard-pinned to its training worker's node "
+        "(NodeAffinity, soft=False); that node has no free slot for it. Check "
+        "`ray list actors` for PENDING_CREATION servers and either reduce per-node "
+        "resource requests or use a layout with >=2 usable GPUs per node for "
+        "cross-node hybrid rollout."
+    )
+
+
+async def _describe_unready_actor(server: ActorHandle) -> str:
+    actor_id = server._actor_id.hex()
+    try:
+        info = await asyncio.wait_for(asyncio.to_thread(get_actor, actor_id, timeout=10), timeout=15)
+    except Exception:
+        # Diagnostics only: the State API needs the dashboard, which a cluster may not run.
+        info = None
+    if not info:
+        return f"{actor_id} state=unknown"
+    return (
+        f"{info.get('name') or actor_id} state={info.get('state')} "
+        f"node={info.get('node_id')} required_resources={info.get('required_resources')}"
+    )
 
 
 class TokenOutput(BaseModel):
