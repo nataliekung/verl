@@ -190,7 +190,7 @@ def main(config):
         from verl.trainer.main_ppo_v0 import TaskRunner
 
         logger.warning(
-            "Legacy trainer `main_ppo_v0.py` is deprecated, and wil be removed in v0.9.0."
+            "Legacy trainer `main_ppo_v0.py` is deprecated and will be removed in a future release. "
             "Please set `trainer.use_v1=True` in config to use V1 trainer."
         )
         run_ppo(config, task_runner_class=TaskRunner)

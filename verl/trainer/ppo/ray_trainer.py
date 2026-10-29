@@ -282,7 +282,9 @@ def compute_advantage(
     return data
 
 
-@deprecated("Legacy trainer is deprecated, and wil be removed in v0.9.0. Please use `trainer.use_v1=True` instead.")
+@deprecated(
+    "Legacy trainer is deprecated and will be removed in a future release. Please use `trainer.use_v1=True` instead."
+)
 class RayPPOTrainer:
     """Distributed PPO trainer using Ray for scalable reinforcement learning.
 
